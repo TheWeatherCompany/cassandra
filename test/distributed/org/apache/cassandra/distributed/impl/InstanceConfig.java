@@ -33,13 +33,16 @@ import java.util.function.Function;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.cassandra.config.YamlConfigurationLoader;
 import org.apache.cassandra.distributed.api.Feature;
 import org.apache.cassandra.distributed.api.IInstanceConfig;
 import org.apache.cassandra.distributed.shared.NetworkTopology;
+import org.apache.cassandra.distributed.shared.Shared;
 import org.apache.cassandra.distributed.shared.Versions;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.locator.SimpleSeedProvider;
 
+@Shared
 public class InstanceConfig implements IInstanceConfig
 {
     private static final Object NULL = new Object();
@@ -204,52 +207,13 @@ public class InstanceConfig implements IInstanceConfig
 
     public void propagate(Object writeToConfig, Map<Class<?>, Function<Object, Object>> mapping)
     {
-        for (Map.Entry<String, Object> e : params.entrySet())
-            propagate(writeToConfig, e.getKey(), e.getValue(), mapping);
+        throw new IllegalStateException("In-JVM dtests no longer support propagate");
     }
 
     public void validate()
     {
         if (((int) get("num_tokens")) > 1)
             throw new IllegalArgumentException("In-JVM dtests do not support vnodes as of now.");
-    }
-
-    private void propagate(Object writeToConfig, String fieldName, Object value, Map<Class<?>, Function<Object, Object>> mapping)
-    {
-        if (value == NULL)
-            value = null;
-
-        if (mapping != null && mapping.containsKey(value.getClass()))
-            value = mapping.get(value.getClass()).apply(value);
-
-        Class<?> configClass = writeToConfig.getClass();
-        Field valueField;
-        try
-        {
-            valueField = configClass.getDeclaredField(fieldName);
-        }
-        catch (NoSuchFieldException e)
-        {
-            logger.warn("No such field: {} in config class {}", fieldName, configClass);
-            return;
-        }
-
-        if (valueField.getType().isEnum() && value instanceof String)
-        {
-            String test = (String) value;
-            value = Arrays.stream(valueField.getType().getEnumConstants())
-                    .filter(e -> ((Enum<?>)e).name().equals(test))
-                    .findFirst()
-                    .get();
-        }
-        try
-        {
-            valueField.set(writeToConfig, value);
-        }
-        catch (IllegalAccessException | IllegalArgumentException e)
-        {
-            throw new IllegalStateException(e);
-        }
     }
 
     public Object get(String name)
@@ -267,11 +231,17 @@ public class InstanceConfig implements IInstanceConfig
         return (String)params.get(name);
     }
 
+    public Map<String, Object> getParams()
+    {
+        return params;
+    }
+
     public static InstanceConfig generate(int nodeNum,
                                           INodeProvisionStrategy provisionStrategy,
                                           NetworkTopology networkTopology,
                                           File root,
-                                          String token)
+                                          String token,
+                                          int datadirCount)
     {
         return new InstanceConfig(nodeNum,
                                   networkTopology,
@@ -282,13 +252,22 @@ public class InstanceConfig implements IInstanceConfig
                                   provisionStrategy.seedIp(),
                                   provisionStrategy.seedPort(),
                                   String.format("%s/node%d/saved_caches", root, nodeNum),
-                                  new String[] { String.format("%s/node%d/data", root, nodeNum) },
+                                  datadirs(datadirCount, root, nodeNum),
                                   String.format("%s/node%d/commitlog", root, nodeNum),
                                   String.format("%s/node%d/hints", root, nodeNum),
                                   String.format("%s/node%d/cdc", root, nodeNum),
                                   token,
                                   provisionStrategy.storagePort(nodeNum),
                                   provisionStrategy.nativeTransportPort(nodeNum));
+    }
+
+    private static String[] datadirs(int datadirCount, File root, int nodeNum)
+    {
+        String datadirFormat = String.format("%s/node%d/data%%d", root.getPath(), nodeNum);
+        String [] datadirs = new String[datadirCount];
+        for (int i = 0; i < datadirs.length; i++)
+            datadirs[i] = String.format(datadirFormat, i);
+        return datadirs;
     }
 
     public InstanceConfig forVersion(Versions.Major major)

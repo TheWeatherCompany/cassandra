@@ -23,6 +23,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import javax.management.openmbean.CompositeData;
+import java.util.function.Predicate;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
@@ -314,7 +315,6 @@ public class ActiveRepairService implements IEndpointStateChangeSubscriber, IFai
                                              RepairParallelism parallelismDegree,
                                              boolean isIncremental,
                                              boolean pullRepair,
-                                             boolean force,
                                              PreviewKind previewKind,
                                              boolean optimiseStreams,
                                              ListeningExecutorService executor,
@@ -327,7 +327,7 @@ public class ActiveRepairService implements IEndpointStateChangeSubscriber, IFai
             return null;
 
         final RepairSession session = new RepairSession(parentRepairSession, UUIDGen.getTimeUUID(), range, keyspace,
-                                                        parallelismDegree, isIncremental, pullRepair, force,
+                                                        parallelismDegree, isIncremental, pullRepair,
                                                         previewKind, optimiseStreams, cfnames);
 
         sessions.put(session.getId(), session);
@@ -780,22 +780,7 @@ public class ActiveRepairService implements IEndpointStateChangeSubscriber, IFai
         if (phi < 2 * DatabaseDescriptor.getPhiConvictThreshold() || parentRepairSessions.isEmpty())
             return;
 
-        Set<UUID> toRemove = new HashSet<>();
-
-        for (Map.Entry<UUID, ParentRepairSession> repairSessionEntry : parentRepairSessions.entrySet())
-        {
-            if (repairSessionEntry.getValue().coordinator.equals(ep))
-            {
-                toRemove.add(repairSessionEntry.getKey());
-            }
-        }
-
-        if (!toRemove.isEmpty())
-        {
-            logger.debug("Removing {} in parent repair sessions", toRemove);
-            for (UUID id : toRemove)
-                removeParentRepairSession(id);
-        }
+        abort((prs) -> prs.coordinator.equals(ep), "Removing {} in parent repair sessions");
     }
 
     public int getRepairPendingCompactionRejectThreshold()
@@ -808,4 +793,21 @@ public class ActiveRepairService implements IEndpointStateChangeSubscriber, IFai
         DatabaseDescriptor.setRepairPendingCompactionRejectThreshold(value);
     }
 
+    /**
+     * Remove any parent repair sessions matching predicate
+     */
+    public void abort(Predicate<ParentRepairSession> predicate, String message)
+    {
+        Set<UUID> parentSessionsToRemove = new HashSet<>();
+        for (Map.Entry<UUID, ParentRepairSession> repairSessionEntry : parentRepairSessions.entrySet())
+        {
+            if (predicate.test(repairSessionEntry.getValue()))
+                parentSessionsToRemove.add(repairSessionEntry.getKey());
+        }
+        if (!parentSessionsToRemove.isEmpty())
+        {
+            logger.info(message, parentSessionsToRemove);
+            parentSessionsToRemove.forEach(this::removeParentRepairSession);
+        }
+    }
 }
